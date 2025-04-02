@@ -1,6 +1,7 @@
 # V5.12 - Higher Resolution via Downscaling (Corrected Interpretation)
 import tkinter as tk
 from tkinter import font as tkFont
+from tkinter import colorchooser, ttk
 import subprocess
 import os
 import signal
@@ -54,8 +55,11 @@ PILLOW_ICON_PADDING = int(4 * RENDER_SCALE) # Internal padding
 
 # --- get JSON ---
 def load_commands(config_file="commands.json"):
-    base_path = os.path.dirname(os.path.abspath(__file__))
-    config_path = os.path.join(base_path, config_file)
+    if os.path.isabs(config_file):
+        config_path = config_file
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(base_path, config_file)
     try:
         with open(config_path, "r") as f:
             commands = json.load(f)
@@ -214,6 +218,506 @@ class CommandIcon(tk.Canvas):
     def on_enter(self, event): self.config(bg=ICON_HOVER_BG_COLOR)
     def on_leave(self, event): self.config(bg=self.parent_bg)
 
+class CommandSettingsWindow:
+    def __init__(self, parent, command_bar, command_file_path="commands.json"):
+        self.parent = parent
+        self.command_bar = command_bar
+        self.command_file_path = command_file_path
+        self.commands = self.load_commands()
+        self.current_command_index = None
+        self.tools = self.get_available_tools()
+        
+        self.window = tk.Toplevel(parent)
+        self.window.title("Command Settings")
+        self.window.configure(bg=BAR_BG_COLOR)
+        self.window.attributes('-topmost', True)
+        
+        # Scale window size relative to screen
+        width = 500
+        height = 500
+        screen_width = parent.winfo_screenwidth()
+        screen_height = parent.winfo_screenheight()
+        x = (screen_width - width) // 2
+        y = (screen_height - height) // 2
+        self.window.geometry(f"{width}x{height}+{x}+{y}")
+        
+        # Main frame
+        main_frame = tk.Frame(self.window, bg=BAR_BG_COLOR)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        # Command list
+        list_frame = tk.Frame(main_frame, bg=BAR_BG_COLOR)
+        list_frame.pack(side=tk.LEFT, fill=tk.BOTH, padx=(0, 10), expand=True)
+        
+        list_label = tk.Label(list_frame, text="Commands", bg=BAR_BG_COLOR, fg=TEXT_COLOR_PRIMARY, font=get_tk_font(12, "bold"))
+        list_label.pack(side=tk.TOP, anchor="w", pady=(0, 5))
+        
+        list_container = tk.Frame(list_frame, bg=BUTTON_GRAY_COLOR)
+        list_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        
+        self.command_listbox = tk.Listbox(list_container, 
+                                         bg=BUTTON_GRAY_COLOR, 
+                                         fg=TEXT_COLOR_PRIMARY,
+                                         selectbackground=ICON_HOVER_BG_COLOR,
+                                         selectforeground=TEXT_COLOR_PRIMARY,
+                                         font=get_tk_font(10),
+                                         bd=0,
+                                         highlightthickness=0)
+        self.command_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.command_listbox.bind('<<ListboxSelect>>', self.on_command_select)
+        
+        list_scrollbar = tk.Scrollbar(list_container)
+        list_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.command_listbox.config(yscrollcommand=list_scrollbar.set)
+        list_scrollbar.config(command=self.command_listbox.yview)
+        
+        # Button controls for list
+        button_frame = tk.Frame(list_frame, bg=BAR_BG_COLOR)
+        button_frame.pack(side=tk.TOP, fill=tk.X, pady=(10, 0))
+        
+        self.add_btn = RoundedButton(button_frame, 80, BUTTON_HEIGHT, BUTTON_HEIGHT/2, 
+                                  text="Add", 
+                                  command=None,  # Set to None and use bind
+                                  bg=BAR_BG_COLOR)
+        self.add_btn.pack(side=tk.LEFT, padx=(0, 5))
+        self.add_btn.bind("<Button-1>", self.add_command)
+        
+        self.remove_btn = RoundedButton(button_frame, 80, BUTTON_HEIGHT, BUTTON_HEIGHT/2, 
+                                     text="Remove", 
+                                     command=None,  # Set to None and use bind
+                                     bg=BAR_BG_COLOR)
+        self.remove_btn.pack(side=tk.LEFT, padx=5)
+        self.remove_btn.bind("<Button-1>", self.remove_command)
+        
+        # Direct save button for the list
+        self.save_list_btn = RoundedButton(button_frame, 80, BUTTON_HEIGHT, BUTTON_HEIGHT/2, 
+                                  text="Save", 
+                                  command=None,  # Set to None and use bind
+                                  color="#34C759",  # Green color for save
+                                  hover_color="#4CD964",
+                                  click_color="#32AE56",
+                                  bg=BAR_BG_COLOR)
+        self.save_list_btn.pack(side=tk.RIGHT, padx=5)
+        self.save_list_btn.bind("<Button-1>", self.save_to_json)
+        
+        # Command edit panel
+        edit_frame = tk.Frame(main_frame, bg=BAR_BG_COLOR)
+        edit_frame.pack(side=tk.RIGHT, fill=tk.BOTH, padx=(10, 0), expand=True)
+        
+        edit_label = tk.Label(edit_frame, text="Edit Command", bg=BAR_BG_COLOR, fg=TEXT_COLOR_PRIMARY, font=get_tk_font(12, "bold"))
+        edit_label.pack(side=tk.TOP, anchor="w", pady=(0, 10))
+        
+        # Tool type
+        tool_frame = tk.Frame(edit_frame, bg=BAR_BG_COLOR)
+        tool_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
+        
+        tool_label = tk.Label(tool_frame, text="Tool:", bg=BAR_BG_COLOR, fg=TEXT_COLOR_PRIMARY, anchor="w", width=10)
+        tool_label.pack(side=tk.LEFT)
+        
+        self.tool_var = tk.StringVar()
+        self.tool_dropdown = ttk.Combobox(tool_frame, textvariable=self.tool_var, values=self.tools, state="readonly", width=20)
+        self.tool_dropdown.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.tool_dropdown.bind("<<ComboboxSelected>>", self.on_tool_change)
+        
+        # Command name
+        name_frame = tk.Frame(edit_frame, bg=BAR_BG_COLOR)
+        name_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
+        
+        name_label = tk.Label(name_frame, text="Name:", bg=BAR_BG_COLOR, fg=TEXT_COLOR_PRIMARY, anchor="w", width=10)
+        name_label.pack(side=tk.LEFT)
+        
+        self.name_var = tk.StringVar()
+        name_entry = tk.Entry(name_frame, textvariable=self.name_var, bg=BUTTON_GRAY_COLOR, fg=TEXT_COLOR_PRIMARY, bd=0, highlightthickness=1, highlightbackground=SEPARATOR_COLOR, insertbackground=TEXT_COLOR_PRIMARY)
+        name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        # Color
+        color_frame = tk.Frame(edit_frame, bg=BAR_BG_COLOR)
+        color_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 10))
+        
+        color_label = tk.Label(color_frame, text="Color:", bg=BAR_BG_COLOR, fg=TEXT_COLOR_PRIMARY, anchor="w", width=10)
+        color_label.pack(side=tk.LEFT)
+        
+        self.color_var = tk.StringVar()
+        color_entry = tk.Entry(color_frame, textvariable=self.color_var, bg=BUTTON_GRAY_COLOR, fg=TEXT_COLOR_PRIMARY, bd=0, highlightthickness=1, highlightbackground=SEPARATOR_COLOR, insertbackground=TEXT_COLOR_PRIMARY, width=10)
+        color_entry.pack(side=tk.LEFT)
+        
+        color_preview = tk.Frame(color_frame, width=20, height=20, bg="#FFFFFF")
+        color_preview.pack(side=tk.LEFT, padx=5)
+        self.color_preview = color_preview
+        
+        color_picker_btn = RoundedButton(color_frame, 80, BUTTON_HEIGHT, BUTTON_HEIGHT/2, 
+                                      text="Pick", 
+                                      command=None,  # Set to None and use bind
+                                      bg=BAR_BG_COLOR)
+        color_picker_btn.pack(side=tk.LEFT, padx=5)
+        color_picker_btn.bind("<Button-1>", self.pick_color)
+        
+        # Args label and info
+        args_label_frame = tk.Frame(edit_frame, bg=BAR_BG_COLOR)
+        args_label_frame.pack(side=tk.TOP, fill=tk.X)
+        
+        args_label = tk.Label(args_label_frame, text="Arguments:", bg=BAR_BG_COLOR, fg=TEXT_COLOR_PRIMARY, anchor="w")
+        args_label.pack(side=tk.LEFT)
+        
+        args_info = tk.Label(args_label_frame, text="(One per line)", bg=BAR_BG_COLOR, fg=SEPARATOR_COLOR, anchor="w")
+        args_info.pack(side=tk.LEFT, padx=5)
+        
+        # Args text area with scrollbar
+        args_frame = tk.Frame(edit_frame, bg=BUTTON_GRAY_COLOR)
+        args_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=(5, 10))
+        
+        self.args_text = tk.Text(args_frame, bg=BUTTON_GRAY_COLOR, fg=TEXT_COLOR_PRIMARY, bd=0, highlightthickness=0, insertbackground=TEXT_COLOR_PRIMARY)
+        self.args_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        args_scrollbar = tk.Scrollbar(args_frame)
+        args_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.args_text.config(yscrollcommand=args_scrollbar.set)
+        args_scrollbar.config(command=self.args_text.yview)
+        
+        # Save and cancel buttons
+        buttons_frame = tk.Frame(edit_frame, bg=BAR_BG_COLOR)
+        buttons_frame.pack(side=tk.TOP, fill=tk.X, pady=(10, 0))
+        
+        save_btn = RoundedButton(buttons_frame, 80, BUTTON_HEIGHT, BUTTON_HEIGHT/2, 
+                              text="Save", 
+                              command=None,  # Set to None and use bind
+                              color="#34C759",  # Green color for save
+                              hover_color="#4CD964",
+                              click_color="#32AE56",
+                              bg=BAR_BG_COLOR)
+        save_btn.pack(side=tk.RIGHT, padx=(5, 0))
+        save_btn.bind("<Button-1>", self.save_command)
+        
+        cancel_btn = RoundedButton(buttons_frame, 80, BUTTON_HEIGHT, BUTTON_HEIGHT/2, 
+                                text="Cancel", 
+                                command=None,  # Set to None and use bind 
+                                bg=BAR_BG_COLOR)
+        cancel_btn.pack(side=tk.RIGHT, padx=(0, 5))
+        cancel_btn.bind("<Button-1>", self.cancel_edit)
+        
+        # Save all changes button at the bottom
+        bottom_frame = tk.Frame(main_frame, bg=BAR_BG_COLOR)
+        bottom_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
+        
+        save_all_btn = RoundedButton(bottom_frame, 150, BUTTON_HEIGHT, BUTTON_HEIGHT/2, 
+                                  text="Save All Changes", 
+                                  command=None,  # Set to None and use bind
+                                  color="#34C759",  # Green color for save
+                                  hover_color="#4CD964",
+                                  click_color="#32AE56",
+                                  bg=BAR_BG_COLOR)
+        save_all_btn.pack(side=tk.RIGHT)
+        save_all_btn.bind("<Button-1>", self.save_all_changes)
+        
+        # Populate the list
+        self.populate_command_list()
+        self.disable_edit_panel()
+        
+        # Configure style
+        style = ttk.Style()
+        style.theme_use('default')
+        style.configure('TCombobox', 
+                     fieldbackground=BUTTON_GRAY_COLOR,
+                     background=BUTTON_GRAY_COLOR,
+                     foreground=TEXT_COLOR_PRIMARY,
+                     arrowcolor=TEXT_COLOR_PRIMARY,
+                     borderwidth=0)
+        style.map('TCombobox',
+               fieldbackground=[('readonly', BUTTON_GRAY_COLOR)],
+               selectbackground=[('readonly', BUTTON_GRAY_COLOR)],
+               selectforeground=[('readonly', TEXT_COLOR_PRIMARY)])
+        
+    def get_available_tools(self):
+        # Get the list of available tools from the package
+        # For simplicity, return the basic tools but this could be extended
+        return ["copy-files", "image-clipboard", "custom"]
+    
+    def load_commands(self):
+        try:
+            with open(self.command_file_path, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error loading command configuration: {e}")
+            return []
+    
+    def save_commands_to_file(self):
+        try:
+            with open(self.command_file_path, "w") as f:
+                json.dump(self.commands, f, indent=4)
+            print(f"Commands saved to {self.command_file_path}")
+            return True
+        except Exception as e:
+            print(f"Error saving command configuration: {e}")
+            return False
+    
+    def populate_command_list(self):
+        self.command_listbox.delete(0, tk.END)
+        for cmd in self.commands:
+            self.command_listbox.insert(tk.END, cmd["name"])
+    
+    def on_command_select(self, event):
+        selection = self.command_listbox.curselection()
+        if selection:
+            index = selection[0]
+            self.current_command_index = index
+            self.load_command_for_edit(self.commands[index])
+            self.enable_edit_panel()
+        else:
+            self.disable_edit_panel()
+    
+    def load_command_for_edit(self, command):
+        # Parse command to identify tool and args
+        cmd_str = command["command"]
+        tool = "custom"  # Default
+        args = []
+        
+        # Try to identify the tool from the command
+        for t in self.tools:
+            if t in cmd_str and t != "custom":
+                tool = t
+                break
+        
+        # Extract arguments based on tool
+        if tool != "custom":
+            # Extract from the command format: "cmd.exe /k python -m university_student_tools.clipboard.image_clipboard \"Path\""
+            parts = cmd_str.split(tool)
+            if len(parts) > 1:
+                # Get everything after the tool name
+                args_part = parts[1].strip()
+                # Split by spaces, preserving quoted parts
+                import shlex
+                try:
+                    args = list(shlex.split(args_part))
+                except:
+                    # Fallback if parsing fails
+                    args = [args_part]
+        else:
+            # For custom commands, just put the whole command as an arg
+            args = [cmd_str]
+        
+        # Set values in the form
+        self.tool_var.set(tool)
+        self.name_var.set(command["name"])
+        self.color_var.set(command["color"])
+        self.color_preview.config(bg=command["color"])
+        
+        # Clear and populate args text
+        self.args_text.delete("1.0", tk.END)
+        if args:
+            self.args_text.insert("1.0", "\n".join(args))
+    
+    def build_command_from_form(self):
+        tool = self.tool_var.get()
+        name = self.name_var.get().strip()
+        color = self.color_var.get().strip()
+        
+        # Get arguments from text area
+        args_text = self.args_text.get("1.0", tk.END).strip()
+        args = [arg for arg in args_text.split("\n") if arg.strip()]
+        
+        # Build command string based on tool
+        if tool == "custom" and args:
+            # For custom, use the first arg as the full command
+            command = args[0]
+        else:
+            # For built-in tools, build the proper command format
+            command = f"cmd.exe /k python -m university_student_tools."
+            if tool == "copy-files":
+                command += f"file_manager.copy_files"
+            elif tool == "image-clipboard":
+                command += f"clipboard.image_clipboard"
+            
+            # Add arguments with quotes if they contain spaces
+            for arg in args:
+                if " " in arg and not (arg.startswith('"') and arg.endswith('"')):
+                    command += f' "{arg}"'
+                else:
+                    command += f" {arg}"
+        
+        return {
+            "name": name,
+            "command": command,
+            "color": color
+        }
+    
+    def validate_form(self):
+        name = self.name_var.get().strip()
+        color = self.color_var.get().strip()
+        
+        if not name:
+            return False, "Command name cannot be empty"
+        
+        # Validate color format
+        if not color.startswith("#") or len(color) != 7:
+            return False, "Invalid color format. Use #RRGGBB"
+        
+        try:
+            int(color[1:], 16)
+        except ValueError:
+            return False, "Invalid color format. Use #RRGGBB"
+        
+        return True, ""
+    
+    def enable_edit_panel(self):
+        self.tool_dropdown.config(state="readonly")
+        # Enable all other form fields
+    
+    def disable_edit_panel(self):
+        self.tool_dropdown.config(state="disabled")
+        self.name_var.set("")
+        self.color_var.set("")
+        self.color_preview.config(bg="#FFFFFF")
+        self.args_text.delete("1.0", tk.END)
+        self.current_command_index = None
+        # Disable all other form fields
+    
+    def add_command(self, event=None):
+        # Create a blank command and select it for editing
+        new_command = {
+            "name": "New Command",
+            "command": "",
+            "color": "#0066FF"
+        }
+        self.commands.append(new_command)
+        self.populate_command_list()
+        
+        # Select the new command in the listbox
+        new_index = len(self.commands) - 1
+        self.command_listbox.selection_clear(0, tk.END)
+        self.command_listbox.selection_set(new_index)
+        self.command_listbox.see(new_index)
+        
+        # Load the new command for editing
+        self.current_command_index = new_index
+        self.load_command_for_edit(new_command)
+        self.enable_edit_panel()
+        
+        print(f"Added new command at index {new_index}")
+        return "break"
+    
+    def remove_command(self, event=None):
+        if self.current_command_index is not None:
+            command_name = self.commands[self.current_command_index]["name"]
+            del self.commands[self.current_command_index]
+            self.populate_command_list()
+            self.disable_edit_panel()
+            print(f"Removed command: {command_name}")
+        else:
+            print("No command selected to remove")
+        return "break"
+    
+    def save_command(self, event=None):
+        if self.current_command_index is None:
+            print("No command selected to save")
+            return "break"
+        
+        valid, message = self.validate_form()
+        if not valid:
+            # Show error message
+            print(message)
+            return "break"
+        
+        # Update the command in memory
+        command = self.build_command_from_form()
+        self.commands[self.current_command_index] = command
+        self.populate_command_list()
+        
+        # Reselect the current command
+        self.command_listbox.selection_clear(0, tk.END)
+        self.command_listbox.selection_set(self.current_command_index)
+        
+        # Save immediately to the JSON file
+        if self.save_commands_to_file():
+            print(f"Command '{command['name']}' saved to {self.command_file_path}")
+            # Update the command bar without closing the window
+            self.command_bar.reload_commands()
+        else:
+            print(f"Failed to save command '{command['name']}' to file")
+        
+        return "break"
+    
+    def cancel_edit(self, event=None):
+        # Reload the current command or clear if none selected
+        if self.current_command_index is not None:
+            self.load_command_for_edit(self.commands[self.current_command_index])
+            print("Cancelled edits")
+        else:
+            self.disable_edit_panel()
+        return "break"
+    
+    def pick_color(self, event=None):
+        # Use a default color if current color is empty or invalid
+        initialcolor = "#0066FF"  # Default blue
+        current_color = self.color_var.get().strip()
+        
+        if current_color and current_color.startswith("#") and len(current_color) == 7:
+            try:
+                int(current_color[1:], 16)
+                initialcolor = current_color
+            except ValueError:
+                pass
+                
+        color = colorchooser.askcolor(initialcolor=initialcolor)
+        if color[1]:  # color is ((r, g, b), hex_color)
+            self.color_var.set(color[1])
+            self.color_preview.config(bg=color[1])
+            print(f"Selected color: {color[1]}")
+        return "break"
+    
+    def on_tool_change(self, event=None):
+        # Could implement logic to show tool-specific UI elements
+        selected_tool = self.tool_var.get()
+        print(f"Selected tool: {selected_tool}")
+    
+    def save_all_changes(self, event=None):
+        # Save current command if editing
+        if self.current_command_index is not None:
+            valid, message = self.validate_form()
+            if valid:
+                self.save_command()
+            else:
+                print(f"Cannot save all changes: {message}")
+                return "break"
+        
+        # Save all commands to file
+        if self.save_commands_to_file():
+            # Reload the command bar
+            self.command_bar.reload_commands()
+            # Close the window
+            self.window.destroy()
+            print("All changes saved and applied")
+        else:
+            print("Failed to save changes")
+        return "break"
+
+    def save_to_json(self, event=None):
+        """Save changes to the JSON file without closing the window."""
+        # Save current command if editing
+        if self.current_command_index is not None:
+            valid, message = self.validate_form()
+            if valid:
+                command = self.build_command_from_form()
+                self.commands[self.current_command_index] = command
+                self.populate_command_list()
+                # Reselect the command
+                self.command_listbox.selection_clear(0, tk.END)
+                self.command_listbox.selection_set(self.current_command_index)
+            else:
+                print(f"Cannot save: {message}")
+                return "break"
+        
+        # Save to file
+        if self.save_commands_to_file():
+            # Update the command bar without closing the window
+            self.command_bar.reload_commands()
+            print(f"All changes saved to {self.command_file_path}")
+        else:
+            print("Failed to save changes to file")
+        
+        return "break"
+
 class VerticalCommandBar:
     # Uses unscaled constants for layout and widget sizes
     def __init__(self, root):
@@ -228,11 +732,12 @@ class VerticalCommandBar:
         self.dragging=False; self.drag_start_x=None; self.drag_start_y=None
         self.widget_drag_active=False; self.widget_press_x_root=0; self.widget_press_y_root=0; self.widget_press_time=0; self.widget_command_on_click=None
         # Load commands from the JSON configuration file.
-        self.commands = load_commands()
+        self.command_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "commands.json")
+        self.commands = load_commands(self.command_file_path)
 
         # Calculations use unscaled constants
         num_icons=len(self.commands); icons_height=(num_icons*ICON_CANVAS_HEIGHT)+((num_icons-1)*ICON_PADDING_VERTICAL)
-        extra_space=SEPARATOR_HEIGHT+BUTTON_HEIGHT+ICON_PADDING_VERTICAL*2; self.bar_width=ICON_SIZE+(2*ICON_CANVAS_WIDTH_PADDING)+(2*BAR_PADDING_HORIZONTAL)
+        extra_space=SEPARATOR_HEIGHT+BUTTON_HEIGHT*2+ICON_PADDING_VERTICAL*3; self.bar_width=ICON_SIZE+(2*ICON_CANVAS_WIDTH_PADDING)+(2*BAR_PADDING_HORIZONTAL)
         self.bar_height=icons_height+extra_space+(2*BAR_PADDING_VERTICAL); screen_width=root.winfo_screenwidth(); screen_height=root.winfo_screenheight()
         x=screen_width-self.bar_width-10; y=(screen_height-self.bar_height)//2; self.root.geometry(f"{self.bar_width}x{self.bar_height}+{x}+{y}")
         self.original_width=self.bar_width; self.original_height=self.bar_height
@@ -255,10 +760,22 @@ class VerticalCommandBar:
 
         separator=tk.Canvas(self.content_frame,height=SEPARATOR_HEIGHT,bg=SEPARATOR_COLOR,highlightthickness=0)
         separator.pack(side=tk.TOP,fill=tk.X,padx=BAR_PADDING_HORIZONTAL,pady=ICON_PADDING_VERTICAL)
-        # Hide Button uses unscaled size/font
+        
+        # Settings Button
+        self.settings_button=RoundedButton(self.content_frame,self.bar_width-(2*(BAR_PADDING_HORIZONTAL+5)),BUTTON_HEIGHT,BUTTON_HEIGHT/2,
+                                         text="Settings",command=self.open_settings,font=FONT_BUTTON,bg=content_bg)
+        self.settings_button.pack(side=tk.TOP,pady=(0,ICON_PADDING_VERTICAL//2))
+        self.settings_button.bind("<Button-1>",lambda event,cmd=self.settings_button.command: self.start_widget_move_or_click(event,cmd))
+        self.settings_button.bind("<ButtonRelease-1>",self.stop_widget_move_or_click)
+        self.settings_button.bind("<B1-Motion>",self.do_widget_move)
+        
+        # Hide Button 
         self.hide_button=RoundedButton(self.content_frame,self.bar_width-(2*(BAR_PADDING_HORIZONTAL+5)),BUTTON_HEIGHT,BUTTON_HEIGHT/2,
                                          text="Hide",command=self.hide_bar,font=FONT_BUTTON,bg=content_bg)
-        self.hide_button.pack(side=tk.TOP,pady=(0,ICON_PADDING_VERTICAL//2)); self.hide_button.bind("<Button-1>",lambda event,cmd=self.hide_button.command: self.start_widget_move_or_click(event,cmd)); self.hide_button.bind("<ButtonRelease-1>",self.stop_widget_move_or_click); self.hide_button.bind("<B1-Motion>",self.do_widget_move)
+        self.hide_button.pack(side=tk.TOP,pady=(0,ICON_PADDING_VERTICAL//2))
+        self.hide_button.bind("<Button-1>",lambda event,cmd=self.hide_button.command: self.start_widget_move_or_click(event,cmd))
+        self.hide_button.bind("<ButtonRelease-1>",self.stop_widget_move_or_click)
+        self.hide_button.bind("<B1-Motion>",self.do_widget_move)
 
         self.content_frame.place(x=BAR_PADDING_HORIZONTAL,y=BAR_PADDING_VERTICAL,width=self.bar_width-(2*BAR_PADDING_HORIZONTAL),height=self.bar_height-(2*BAR_PADDING_VERTICAL))
         # Close button uses unscaled size/font/offset
@@ -266,7 +783,10 @@ class VerticalCommandBar:
                                           color=CLOSE_BUTTON_COLOR,hover_color=adjust_color(CLOSE_BUTTON_COLOR,1.15),click_color=adjust_color(CLOSE_BUTTON_COLOR,0.85),
                                           text="✕",text_color="white",command=self.on_close,font=FONT_CLOSE_BUTTON,
                                           bg=BAR_BG_COLOR if not self.use_alpha_transparency else self.bar_canvas.cget('bg'))
-        self.close_button.place(x=self.bar_width-CLOSE_BUTTON_SIZE-5,y=5); self.close_button.bind("<Button-1>",lambda event,cmd=self.close_button.command: self.start_widget_move_or_click(event,cmd)); self.close_button.bind("<ButtonRelease-1>",self.stop_widget_move_or_click); self.close_button.bind("<B1-Motion>",self.do_widget_move)
+        self.close_button.place(x=self.bar_width-CLOSE_BUTTON_SIZE-5,y=5)
+        self.close_button.bind("<Button-1>",lambda event,cmd=self.close_button.command: self.start_widget_move_or_click(event,cmd))
+        self.close_button.bind("<ButtonRelease-1>",self.stop_widget_move_or_click)
+        self.close_button.bind("<B1-Motion>",self.do_widget_move)
 
         # --- Show Button Setup (Renders High-Res, Downscales to unscaled SHOW_BUTTON_SIZE) ---
         self.show_button_frame = tk.Frame(root, bg=BG_COLOR_TRANSPARENT)
@@ -295,6 +815,63 @@ class VerticalCommandBar:
         # --- End Show Button Setup ---
 
         self.bar_canvas.bind("<Button-1>", self.start_move); self.bar_canvas.bind("<ButtonRelease-1>", self.stop_move); self.bar_canvas.bind("<B1-Motion>", self.do_move); self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def open_settings(self):
+        # Open the settings window
+        CommandSettingsWindow(self.root, self, self.command_file_path)
+    
+    def reload_commands(self):
+        # Reload commands from the JSON file and refresh the UI
+        for name in list(self.processes.keys()):
+            self.toggle_command(name)  # Turn off any running processes
+        
+        # Clear existing icon widgets
+        for widget in self.icon_widgets.values():
+            widget.destroy()
+        self.icon_widgets = {}
+        self._icon_photo_refs = []
+        
+        # Reload commands
+        self.commands = load_commands(self.command_file_path)
+        
+        # Recreate icons
+        for cmd_data in self.commands:
+            icon_canvas_width = self.bar_width - (2 * BAR_PADDING_HORIZONTAL)
+            icon = CommandIcon(self.content_frame, icon_canvas_width, ICON_CANVAS_HEIGHT,
+                             command_name=cmd_data["name"], command_color=cmd_data["color"], command_action=self.toggle_command)
+            if icon.icon_photoimage:
+                self._icon_photo_refs.append(icon.icon_photoimage)
+            icon.pack(side=tk.TOP, pady=(ICON_PADDING_VERTICAL//2, ICON_PADDING_VERTICAL//2), padx=0)
+            self.icon_widgets[cmd_data["name"]] = icon
+            cmd_func = lambda name=cmd_data["name"]: self.toggle_command(name)
+            icon.bind("<Button-1>", lambda event, cmd=cmd_func: self.start_widget_move_or_click(event, cmd))
+            icon.bind("<ButtonRelease-1>", self.stop_widget_move_or_click)
+            icon.bind("<B1-Motion>", self.do_widget_move)
+        
+        # Update bar size based on new number of commands
+        self.update_bar_size()
+        
+    def update_bar_size(self):
+        # Recalculate bar size based on current number of commands
+        num_icons = len(self.commands)
+        icons_height = (num_icons * ICON_CANVAS_HEIGHT) + ((num_icons - 1) * ICON_PADDING_VERTICAL)
+        extra_space = SEPARATOR_HEIGHT + BUTTON_HEIGHT * 2 + ICON_PADDING_VERTICAL * 3  # For settings and hide buttons
+        self.bar_height = icons_height + extra_space + (2 * BAR_PADDING_VERTICAL)
+        
+        # Update geometry
+        x = self.root.winfo_x()
+        y = self.root.winfo_y()
+        self.root.geometry(f"{self.bar_width}x{self.bar_height}+{x}+{y}")
+        self.original_height = self.bar_height
+        
+        # Redraw background if needed
+        if not self.use_alpha_transparency:
+            self._draw_bar_background()
+        
+        # Update content frame
+        self.content_frame.place(x=BAR_PADDING_HORIZONTAL, y=BAR_PADDING_VERTICAL, 
+                              width=self.bar_width-(2*BAR_PADDING_HORIZONTAL), 
+                              height=self.bar_height-(2*BAR_PADDING_VERTICAL))
 
     # --- Generic Widget Drag/Click Handlers (Unchanged) ---
     def start_widget_move_or_click(self, event, command_to_run):
