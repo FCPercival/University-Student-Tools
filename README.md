@@ -112,7 +112,7 @@ Each tool can be run independently based on your needs. The tools are designed t
 
 ## Contributing
 
-Feel free to submit issues and enhancement requests!
+Any enhancement request is welcome!
 
 ## License
 
