@@ -1,0 +1,3 @@
+[console_scripts]
+copy-files = university_student_tools.file_manager.copy_files:main
+image-clipboard = university_student_tools.clipboard.image_clipboard:main

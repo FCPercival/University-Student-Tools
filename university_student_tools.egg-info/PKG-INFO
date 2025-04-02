@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: university-student-tools
+Version: 0.1.0
+Summary: A collection of tools for university students
+Author: Mattia
+Requires-Python: >=3.6
+License-File: LICENSE
+Requires-Dist: Pillow
+Requires-Dist: pyperclip
+Requires-Dist: watchdog
+Dynamic: author
+Dynamic: license-file
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

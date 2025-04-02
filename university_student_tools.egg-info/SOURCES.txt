@@ -1,0 +1,14 @@
+LICENSE
+README.md
+setup.py
+university_student_tools/__init__.py
+university_student_tools.egg-info/PKG-INFO
+university_student_tools.egg-info/SOURCES.txt
+university_student_tools.egg-info/dependency_links.txt
+university_student_tools.egg-info/entry_points.txt
+university_student_tools.egg-info/requires.txt
+university_student_tools.egg-info/top_level.txt
+university_student_tools/clipboard/__init__.py
+university_student_tools/clipboard/image_clipboard.py
+university_student_tools/file_manager/__init__.py
+university_student_tools/file_manager/copy_files.py
