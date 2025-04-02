@@ -16,6 +16,8 @@ except ImportError:
 import base64
 import io
 import matplotlib.font_manager
+import json
+import os
 
 # --- Scaling Factor for Internal Rendering ---
 RENDER_SCALE = 3 # Render at 3x size then downscale for sharpness
@@ -49,6 +51,22 @@ PILLOW_TARGET_ICON_SIZE = ICON_SIZE # Keep track of final desired size
 PILLOW_RENDER_SIZE = PILLOW_TARGET_ICON_SIZE * RENDER_SCALE # Internal canvas size
 PILLOW_ICON_FONT_SIZE = int(15 * RENDER_SCALE) # Internal font size
 PILLOW_ICON_PADDING = int(4 * RENDER_SCALE) # Internal padding
+
+# --- get JSON ---
+def load_commands(config_file="commands.json"):
+    base_path = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(base_path, config_file)
+    try:
+        with open(config_path, "r") as f:
+            commands = json.load(f)
+        # Replace the placeholder in the command string with the actual base path.
+        for cmd in commands:
+            if "{BASE_PATH}" in cmd["command"]:
+                cmd["command"] = cmd["command"].format(BASE_PATH=base_path)
+        return commands
+    except Exception as e:
+        print(f"Error loading command configuration: {e}")
+        return []
 
 # --- Font Setup ---
 def get_tk_font(size, weight="normal"): # Use unscaled size for Tkinter elements
@@ -209,14 +227,8 @@ class VerticalCommandBar:
         self.is_hidden=False; self.original_x=None; self.original_y=None; self.original_width=None; self.original_height=None
         self.dragging=False; self.drag_start_x=None; self.drag_start_y=None
         self.widget_drag_active=False; self.widget_press_x_root=0; self.widget_press_y_root=0; self.widget_press_time=0; self.widget_command_on_click=None
-        self.commands = [
-            {
-                "name": "NameToShow",
-                "command": "C:\\Windows\\System32\\cmd.exe /k python C:\\PATH\\TO\\SCRIPT\\script.py",
-                "color": "#5856D6"  # Purple
-            }
-        ]
-        # Replace with actual commands
+        # Load commands from the JSON configuration file.
+        self.commands = load_commands()
 
         # Calculations use unscaled constants
         num_icons=len(self.commands); icons_height=(num_icons*ICON_CANVAS_HEIGHT)+((num_icons-1)*ICON_PADDING_VERTICAL)
