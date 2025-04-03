@@ -27,6 +27,6 @@
     {
         "name": "LAI_Pic",
         "command": "cmd.exe /k python -m university_student_tools.clipboard.image_clipboard \"Path\\to\\images\\Logic for AI\"",
-        "color": "#34C759"
+        "color": "#00ff80"
     }
 ]

@@ -362,7 +362,7 @@ class CommandSettingsWindow:
         args_label = tk.Label(args_label_frame, text="Arguments:", bg=BAR_BG_COLOR, fg=TEXT_COLOR_PRIMARY, anchor="w")
         args_label.pack(side=tk.LEFT)
         
-        args_info = tk.Label(args_label_frame, text="(One per line)", bg=BAR_BG_COLOR, fg=SEPARATOR_COLOR, anchor="w")
+        args_info = tk.Label(args_label_frame, text="(Write here the command and paths for the tool)", bg=BAR_BG_COLOR, fg=SEPARATOR_COLOR, anchor="w")
         args_info.pack(side=tk.LEFT, padx=5)
         
         # Args text area with scrollbar
