@@ -463,11 +463,13 @@ class CommandSettingsWindow:
         selection = self.command_listbox.curselection()
         if selection:
             index = selection[0]
-            self.current_command_index = index
-            self.load_command_for_edit(self.commands[index])
-            self.enable_edit_panel()
-        else:
-            self.disable_edit_panel()
+            # If the selected command is not the current command, load it for editing
+            if index != self.current_command_index:
+                self.current_command_index = index
+                self.load_command_for_edit(self.commands[index])
+                self.enable_edit_panel()
+        #else:
+        #    self.disable_edit_panel()
     
     def load_command_for_edit(self, command):
         # Parse command to identify tool and args
@@ -669,9 +671,23 @@ class CommandSettingsWindow:
         return "break"
     
     def on_tool_change(self, event=None):
-        # Could implement logic to show tool-specific UI elements
         selected_tool = self.tool_var.get()
-        print(f"Selected tool: {selected_tool}")
+        print(f"Selected tool: {selected_tool}") # Keep for logging
+
+        # Clear existing arguments
+        self.args_text.delete("1.0", tk.END)
+
+        # Populate with default arguments based on the selected tool
+        default_args = ""
+        if selected_tool == "copy-files":
+            default_args = '"Source Path"\\n"Destination Path"' # Use double quotes for paths, separated by newline
+        elif selected_tool == "image-clipboard":
+            default_args = '"Image Directory Path"' # Use double quotes for path
+        elif selected_tool == "custom":
+            default_args = "# Enter the full custom command here\\n" # Provide a helpful comment for custom commands
+
+        if default_args:
+            self.args_text.insert("1.0", default_args)
     
     def save_all_changes(self, event=None):
         # Save current command if editing
