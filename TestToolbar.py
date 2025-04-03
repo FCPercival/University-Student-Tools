@@ -235,7 +235,7 @@ class CommandSettingsWindow:
         self.window.protocol("WM_DELETE_WINDOW", self.on_window_close)
         
         # Scale window size relative to screen
-        width = 500
+        width = 750
         height = 500
         screen_width = parent.winfo_screenwidth()
         screen_height = parent.winfo_screenheight()
