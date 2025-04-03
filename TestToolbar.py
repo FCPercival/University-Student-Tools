@@ -726,6 +726,69 @@ class CommandSettingsWindow:
             self.on_close_callback()
         self.window.destroy()
 
+class CommandBarUIManager:
+    """Manages the creation, layout, and reloading of UI elements within the command bar."""
+    def __init__(self, command_bar, content_frame, separator, settings_button, hide_button, initial_commands):
+        self.command_bar = command_bar # Reference to the main VerticalCommandBar instance
+        self.content_frame = content_frame
+        self.separator = separator
+        self.settings_button = settings_button
+        self.hide_button = hide_button
+
+        self.icon_widgets = {} # Dictionary to store CommandIcon widgets {name: widget}
+        self._icon_photo_refs = [] # Keep references to PhotoImage objects
+
+        self.build_ui(initial_commands)
+
+    def _clear_widgets(self):
+        """Removes existing command icons, separator, and buttons from the layout."""
+        # Clear existing icon widgets
+        for widget in self.icon_widgets.values():
+            widget.pack_forget() # Remove from layout
+            widget.destroy() # Destroy the widget
+        self.icon_widgets = {}
+        self._icon_photo_refs = []
+
+        # Remove separator and buttons from layout
+        self.separator.pack_forget()
+        self.settings_button.pack_forget()
+        self.hide_button.pack_forget()
+
+    def _create_icon(self, cmd_data):
+        """Creates and binds a single CommandIcon widget."""
+        icon_canvas_width = self.command_bar.bar_width - (2 * BAR_PADDING_HORIZONTAL)
+        icon = CommandIcon(self.content_frame, icon_canvas_width, ICON_CANVAS_HEIGHT,
+                         command_name=cmd_data["name"], command_color=cmd_data["color"],
+                         command_action=self.command_bar.toggle_command) # Action calls method on command_bar
+        if icon.icon_photoimage:
+            self._icon_photo_refs.append(icon.icon_photoimage)
+
+        # Bind drag/click events - handlers are methods on command_bar
+        cmd_func = lambda name=cmd_data["name"]: self.command_bar.toggle_command(name)
+        icon.bind("<Button-1>", lambda event, cmd=cmd_func: self.command_bar.start_widget_move_or_click(event, cmd))
+        icon.bind("<ButtonRelease-1>", self.command_bar.stop_widget_move_or_click)
+        icon.bind("<B1-Motion>", self.command_bar.do_widget_move)
+
+        self.icon_widgets[cmd_data["name"]] = icon
+        return icon
+
+    def build_ui(self, commands):
+        """Creates and lays out all UI elements based on the provided commands."""
+        # Create icons
+        for cmd_data in commands:
+            icon = self._create_icon(cmd_data)
+            icon.pack(side=tk.TOP, pady=(ICON_PADDING_VERTICAL // 2, ICON_PADDING_VERTICAL // 2), padx=0)
+
+        # Re-pack the separator and buttons at the bottom
+        self.separator.pack(side=tk.TOP, fill=tk.X, padx=BAR_PADDING_HORIZONTAL, pady=ICON_PADDING_VERTICAL)
+        self.settings_button.pack(side=tk.TOP, pady=(0, ICON_PADDING_VERTICAL // 2))
+        self.hide_button.pack(side=tk.TOP, pady=(0, ICON_PADDING_VERTICAL // 2))
+
+    def reload_ui(self, new_commands):
+        """Clears the existing UI and builds it again with new commands."""
+        self._clear_widgets()
+        self.build_ui(new_commands)
+
 class VerticalCommandBar:
     # Uses unscaled constants for layout and widget sizes
     def __init__(self, root):
@@ -743,8 +806,10 @@ class VerticalCommandBar:
         self.command_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "commands.json")
         self.commands = load_commands(self.command_file_path)
         self.settings_window = None # Add variable to track settings window
+        self.processes={} # Track running processes {name: pid}
 
         # Calculations use unscaled constants
+        # Initial calculation based on loaded commands
         num_icons=len(self.commands); icons_height=(num_icons*ICON_CANVAS_HEIGHT)+((num_icons-1)*ICON_PADDING_VERTICAL)
         extra_space=SEPARATOR_HEIGHT+BUTTON_HEIGHT*2+ICON_PADDING_VERTICAL*3; self.bar_width=ICON_SIZE+(2*ICON_CANVAS_WIDTH_PADDING)+(2*BAR_PADDING_HORIZONTAL)
         self.bar_height=icons_height+extra_space+(2*BAR_PADDING_VERTICAL); screen_width=root.winfo_screenwidth(); screen_height=root.winfo_screenheight()
@@ -755,39 +820,42 @@ class VerticalCommandBar:
         self.bar_canvas=tk.Canvas(self.main_frame,width=self.bar_width,height=self.bar_height,bd=0,highlightthickness=0,bg=BG_COLOR_TRANSPARENT if not self.use_alpha_transparency else BAR_BG_COLOR)
         self.bar_canvas.place(x=0,y=0,relwidth=1,relheight=1);
         if not self.use_alpha_transparency: self._draw_bar_background()
-        content_bg=BAR_BG_COLOR if not self.use_alpha_transparency else self.bar_canvas.cget('bg'); self.content_frame=tk.Frame(self.bar_canvas,bg=content_bg)
 
-        self.processes={}; self.icon_widgets={}; self._icon_photo_refs=[]
-        for cmd_data in self.commands:
-             icon_canvas_width=self.bar_width-(2*BAR_PADDING_HORIZONTAL)
-             icon=CommandIcon(self.content_frame,icon_canvas_width,ICON_CANVAS_HEIGHT,
-                                command_name=cmd_data["name"],command_color=cmd_data["color"],command_action=self.toggle_command)
-             if icon.icon_photoimage: self._icon_photo_refs.append(icon.icon_photoimage)
-             icon.pack(side=tk.TOP,pady=(ICON_PADDING_VERTICAL//2, ICON_PADDING_VERTICAL//2),padx=0); self.icon_widgets[cmd_data["name"]]=icon
-             cmd_func=lambda name=cmd_data["name"]: self.toggle_command(name)
-             icon.bind("<Button-1>",lambda event,cmd=cmd_func: self.start_widget_move_or_click(event,cmd)); icon.bind("<ButtonRelease-1>",self.stop_widget_move_or_click); icon.bind("<B1-Motion>",self.do_widget_move)
+        # --- Content Frame and Shared Widgets ---
+        content_bg=BAR_BG_COLOR if not self.use_alpha_transparency else self.bar_canvas.cget('bg');
+        self.content_frame=tk.Frame(self.bar_canvas,bg=content_bg)
 
-        separator=tk.Canvas(self.content_frame,height=SEPARATOR_HEIGHT,bg=SEPARATOR_COLOR,highlightthickness=0)
-        separator.pack(side=tk.TOP,fill=tk.X,padx=BAR_PADDING_HORIZONTAL,pady=ICON_PADDING_VERTICAL)
-        self.separator = separator
-
-        # Settings Button
+        # Separator and bottom buttons are created here but managed by UIManager
+        self.separator=tk.Canvas(self.content_frame,height=SEPARATOR_HEIGHT,bg=SEPARATOR_COLOR,highlightthickness=0)
         self.settings_button=RoundedButton(self.content_frame,self.bar_width-(2*(BAR_PADDING_HORIZONTAL+5)),BUTTON_HEIGHT,BUTTON_HEIGHT/2,
                                          text="Settings",command=self.open_settings,font=FONT_BUTTON,bg=content_bg)
-        self.settings_button.pack(side=tk.TOP,pady=(0,ICON_PADDING_VERTICAL//2))
+        self.hide_button=RoundedButton(self.content_frame,self.bar_width-(2*(BAR_PADDING_HORIZONTAL+5)),BUTTON_HEIGHT,BUTTON_HEIGHT/2,
+                                         text="Hide",command=self.hide_bar,font=FONT_BUTTON,bg=content_bg)
+
+        # Bind events for Settings and Hide buttons
         self.settings_button.bind("<Button-1>",lambda event,cmd=self.settings_button.command: self.start_widget_move_or_click(event,cmd))
         self.settings_button.bind("<ButtonRelease-1>",self.stop_widget_move_or_click)
         self.settings_button.bind("<B1-Motion>",self.do_widget_move)
-        
-        # Hide Button 
-        self.hide_button=RoundedButton(self.content_frame,self.bar_width-(2*(BAR_PADDING_HORIZONTAL+5)),BUTTON_HEIGHT,BUTTON_HEIGHT/2,
-                                         text="Hide",command=self.hide_bar,font=FONT_BUTTON,bg=content_bg)
-        self.hide_button.pack(side=tk.TOP,pady=(0,ICON_PADDING_VERTICAL//2))
         self.hide_button.bind("<Button-1>",lambda event,cmd=self.hide_button.command: self.start_widget_move_or_click(event,cmd))
         self.hide_button.bind("<ButtonRelease-1>",self.stop_widget_move_or_click)
         self.hide_button.bind("<B1-Motion>",self.do_widget_move)
 
+        # --- UI Manager ---
+        # Create the UI Manager instance, passing necessary components and initial commands
+        self.ui_manager = CommandBarUIManager(
+            self,
+            self.content_frame,
+            self.separator,
+            self.settings_button,
+            self.hide_button,
+            self.commands
+        )
+        # ui_manager.build_ui() is called in its __init__
+
+        # Place the content frame
         self.content_frame.place(x=BAR_PADDING_HORIZONTAL,y=BAR_PADDING_VERTICAL,width=self.bar_width-(2*BAR_PADDING_HORIZONTAL),height=self.bar_height-(2*BAR_PADDING_VERTICAL))
+
+        # --- Close Button ---
         # Close button uses unscaled size/font/offset
         self.close_button=RoundedButton(self.bar_canvas,CLOSE_BUTTON_SIZE,CLOSE_BUTTON_SIZE,CLOSE_BUTTON_SIZE/2,padding=1,
                                           color=CLOSE_BUTTON_COLOR,hover_color=adjust_color(CLOSE_BUTTON_COLOR,1.15),click_color=adjust_color(CLOSE_BUTTON_COLOR,0.85),
@@ -824,6 +892,7 @@ class VerticalCommandBar:
         # Bindings set in hide_bar
         # --- End Show Button Setup ---
 
+        # Bind background drag events
         self.bar_canvas.bind("<Button-1>", self.start_move); self.bar_canvas.bind("<ButtonRelease-1>", self.stop_move); self.bar_canvas.bind("<B1-Motion>", self.do_move); self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def open_settings(self):
@@ -837,8 +906,8 @@ class VerticalCommandBar:
         # Open the settings window
         print("Opening new settings window.")
         self.settings_window = CommandSettingsWindow(
-            self.root, 
-            self, 
+            self.root,
+            self,
             on_close_callback=self.on_settings_close, # Pass callback
             command_file_path=self.command_file_path
         )
@@ -850,104 +919,152 @@ class VerticalCommandBar:
 
     def reload_commands(self):
         # Reload commands from the JSON file and refresh the UI
-        for name in list(self.processes.keys()):
-            self.toggle_command(name)  # Turn off any running processes
-        
-        # Clear existing icon widgets
-        for widget in self.icon_widgets.values():
-            widget.pack_forget() # Remove from layout
-            widget.destroy()
-        self.icon_widgets = {}
-        self._icon_photo_refs = []
-        
-        #Remove separator and buttons from layout
-        self.separator.pack_forget()
-        self.settings_button.pack_forget()
-        self.hide_button.pack_forget()
 
-        # Reload commands
+        #Turn off any running processes associated with the *current* command list
+        #    before reloading the list itself.
+        active_processes_before_reload = list(self.processes.keys())
+        for name in active_processes_before_reload:
+            # Ensure the command still exists in the current list before trying to toggle
+            if name in self.ui_manager.icon_widgets: # Check against UI manager's knowledge
+                 self.toggle_command(name) # Use toggle to attempt graceful shutdown
+
+        # 2. Reload commands data from file
         try:
             self.commands = load_commands(self.command_file_path)
+            print(f"Successfully reloaded {len(self.commands)} commands from {self.command_file_path}")
         except Exception as e:
-            print(f"Error in loading commands from {self.command_file_path}: {e}")
+            print(f"Error loading commands from {self.command_file_path}: {e}")
             self.commands = [] # Proceed with an empty list in case of error
-        
-        # Recreate icons
-        for cmd_data in self.commands:
-            icon_canvas_width = self.bar_width - (2 * BAR_PADDING_HORIZONTAL)
-            icon = CommandIcon(self.content_frame, icon_canvas_width, ICON_CANVAS_HEIGHT,
-                             command_name=cmd_data["name"], command_color=cmd_data["color"], command_action=self.toggle_command)
-            if icon.icon_photoimage:
-                self._icon_photo_refs.append(icon.icon_photoimage)
-            icon.pack(side=tk.TOP, pady=(ICON_PADDING_VERTICAL//2, ICON_PADDING_VERTICAL//2), padx=0)
-            self.icon_widgets[cmd_data["name"]] = icon
-            cmd_func = lambda name=cmd_data["name"]: self.toggle_command(name)
-            icon.bind("<Button-1>", lambda event, cmd=cmd_func: self.start_widget_move_or_click(event, cmd))
-            icon.bind("<ButtonRelease-1>", self.stop_widget_move_or_click)
-            icon.bind("<B1-Motion>", self.do_widget_move)
 
-        # Re-pack the separator and buttons at the bottom
-        self.separator.pack(side=tk.TOP, fill=tk.X, padx=BAR_PADDING_HORIZONTAL, pady=ICON_PADDING_VERTICAL)
-        self.settings_button.pack(side=tk.TOP, pady=(0, ICON_PADDING_VERTICAL//2))
-        self.hide_button.pack(side=tk.TOP, pady=(0, ICON_PADDING_VERTICAL//2))
+        # 3. Tell the UI manager to rebuild the UI with the new command list
+        self.ui_manager.reload_ui(self.commands)
+        # The ui_manager now handles clearing old widgets and creating/packing new ones.
 
-        # Update bar size based on new number of commands
+        # 4. Update the main bar's size based on the new content
         self.update_bar_size()
-        
+        print("Command bar UI refreshed.")
+
     def update_bar_size(self):
         # Recalculate bar size based on current number of commands
-        num_icons = len(self.commands)
-        icons_height = (num_icons * ICON_CANVAS_HEIGHT) + ((num_icons - 1) * ICON_PADDING_VERTICAL)
+        num_icons = len(self.commands) # Use the reloaded command count
+        icons_height = (num_icons * ICON_CANVAS_HEIGHT) + (max(0, num_icons - 1) * ICON_PADDING_VERTICAL) # Ensure non-negative padding
         extra_space = SEPARATOR_HEIGHT + BUTTON_HEIGHT * 2 + ICON_PADDING_VERTICAL * 3  # For settings and hide buttons
         self.bar_height = icons_height + extra_space + (2 * BAR_PADDING_VERTICAL)
-        
-        # Update geometry
-        x = self.root.winfo_x()
-        y = self.root.winfo_y()
-        self.root.geometry(f"{self.bar_width}x{self.bar_height}+{x}+{y}")
+
+        # Update geometry if the bar is not hidden
+        if not self.is_hidden:
+            x = self.root.winfo_x()
+            y = self.root.winfo_y()
+            self.root.geometry(f"{self.bar_width}x{self.bar_height}+{x}+{y}")
+
+            # Redraw background if needed
+            self.bar_canvas.config(height=self.bar_height) # Update canvas size
+            if not self.use_alpha_transparency:
+                self._draw_bar_background() # Redraw rounded background for new size
+
+            # Update content frame position and size
+            self.content_frame.place(x=BAR_PADDING_HORIZONTAL, y=BAR_PADDING_VERTICAL,
+                                  width=self.bar_width-(2*BAR_PADDING_HORIZONTAL),
+                                  height=self.bar_height-(2*BAR_PADDING_VERTICAL))
+
+        # Update original height for restoring after hide
         self.original_height = self.bar_height
-        
-        # Redraw background if needed
-        if not self.use_alpha_transparency:
-            self._draw_bar_background()
-        
-        # Update content frame
-        self.content_frame.place(x=BAR_PADDING_HORIZONTAL, y=BAR_PADDING_VERTICAL, 
-                              width=self.bar_width-(2*BAR_PADDING_HORIZONTAL), 
-                              height=self.bar_height-(2*BAR_PADDING_VERTICAL))
+
 
     # --- Generic Widget Drag/Click Handlers (Unchanged) ---
+    # These remain here as they handle general window dragging initiated from widgets
     def start_widget_move_or_click(self, event, command_to_run):
-        if isinstance(event.widget, RoundedButton) and not event.widget.image: event.widget.set_pressed_state(True)
+        # Check if the widget is a CommandIcon via the UIManager or other buttons
+        widget = event.widget
+        # Find the parent CommandIcon if a child element was clicked
+        while widget and not isinstance(widget, (CommandIcon, RoundedButton)):
+            widget = widget.master
+            if widget == self.root: # Stop if we reach the root window
+                 widget = None
+                 break
+
+        if isinstance(widget, RoundedButton) and not widget.image: widget.set_pressed_state(True)
+        elif isinstance(widget, CommandIcon): pass # No visual press state for CommandIcon itself
+
         self.widget_press_x_root=event.x_root; self.widget_press_y_root=event.y_root; self.widget_press_time=event.time; self.widget_command_on_click=command_to_run; self.widget_drag_active=False; self.drag_start_x=None; self.drag_start_y=None
+
     def stop_widget_move_or_click(self, event):
-        widget=event.widget;
+        widget=event.widget
+        # Find the parent CommandIcon or RoundedButton if a child element was clicked/released
+        while widget and not isinstance(widget, (CommandIcon, RoundedButton)):
+            widget = widget.master
+            if widget == self.root: widget = None; break
+
         if isinstance(widget, RoundedButton) and not widget.image:
             widget.set_pressed_state(False);
             if not self.widget_drag_active:
                  x, y = event.x, event.y; w, h = widget.winfo_width(), widget.winfo_height();
-                 if 0<=x<w and 0<=y<h: widget.set_hover_state(True)
-                 else: widget.set_hover_state(False)
+                 # Need relative coords if event was on a child
+                 try:
+                     rel_x = event.x_root - widget.winfo_rootx()
+                     rel_y = event.y_root - widget.winfo_rooty()
+                     if 0<=rel_x<w and 0<=rel_y<h: widget.set_hover_state(True)
+                     else: widget.set_hover_state(False)
+                 except: # Fallback if winfo fails during redraw/destroy
+                      widget.set_hover_state(False)
+
             else: widget.set_hover_state(False)
+        elif isinstance(widget, CommandIcon):
+             # Handle hover state for CommandIcon if needed (e.g., on mouse release over it)
+             if not self.widget_drag_active:
+                 try:
+                     rel_x = event.x_root - widget.winfo_rootx()
+                     rel_y = event.y_root - widget.winfo_rooty()
+                     w, h = widget.winfo_width(), widget.winfo_height()
+                     if 0<=rel_x<w and 0<=rel_y<h: widget.on_enter(None) # Simulate enter if released over
+                     else: widget.on_leave(None) # Simulate leave
+                 except:
+                     widget.on_leave(None) # Simulate leave on error
+
         if not self.widget_drag_active:
             moved_dist=abs(event.x_root-self.widget_press_x_root)+abs(event.y_root-self.widget_press_y_root); time_elapsed=event.time-self.widget_press_time
             if moved_dist<CLICK_MOVE_THRESHOLD and time_elapsed<CLICK_TIME_THRESHOLD:
-                if self.widget_command_on_click: self.widget_command_on_click()
+                if self.widget_command_on_click:
+                    print(f"Click detected. Running command: {getattr(self.widget_command_on_click, '__name__', 'lambda')}")
+                    self.widget_command_on_click()
+                else:
+                     print("Click detected, but no command associated.")
+
+        # Reset states
         self.widget_drag_active=False; self.widget_command_on_click=None; self.drag_start_x=None; self.drag_start_y=None
+
+
     def do_widget_move(self, event):
-        if self.widget_command_on_click is None: return
+        if self.widget_command_on_click is None: return # Only drag if initiated on a widget
         if not self.widget_drag_active:
             moved_dist=abs(event.x_root-self.widget_press_x_root)+abs(event.y_root-self.widget_press_y_root)
             if moved_dist>=CLICK_MOVE_THRESHOLD:
                 self.widget_drag_active=True
-                if isinstance(event.widget, RoundedButton) and not event.widget.image: event.widget.set_pressed_state(False); event.widget.set_hover_state(False)
+                print("Drag started.") # Debug print
+                # Ensure press/hover states are removed from the original widget when drag starts
+                widget = event.widget
+                while widget and not isinstance(widget, (CommandIcon, RoundedButton)):
+                    widget = widget.master
+                    if widget == self.root: widget = None; break
+                if isinstance(widget, RoundedButton) and not widget.image: widget.set_pressed_state(False); widget.set_hover_state(False)
+                elif isinstance(widget, CommandIcon): widget.on_leave(None) # Ensure hover effect is off
+
         if self.widget_drag_active:
-            if self.drag_start_x is None: self.drag_start_x=event.x_root-self.root.winfo_x(); self.drag_start_y=event.y_root-self.root.winfo_y()
-            new_x=event.x_root-self.drag_start_x; new_y=event.y_root-self.drag_start_y; self.root.geometry(f"+{new_x}+{new_y}")
+            # If drag just started, record the offset
+            if self.drag_start_x is None:
+                 self.drag_start_x=event.x_root-self.root.winfo_x()
+                 self.drag_start_y=event.y_root-self.root.winfo_y()
+                 print(f"Drag offset calculated: dx={self.drag_start_x}, dy={self.drag_start_y}") # Debug print
+            # Calculate new window position and move the root window
+            new_x=event.x_root-self.drag_start_x
+            new_y=event.y_root-self.drag_start_y
+            self.root.geometry(f"+{new_x}+{new_y}")
 
     # --- Background Drag Handlers (Unchanged) ---
     def start_move(self, event):
-        if self.widget_command_on_click is None: self.drag_start_x=event.x_root-self.root.winfo_x(); self.drag_start_y=event.y_root-self.root.winfo_y()
+        # Only start background drag if not clicking on a widget managed by widget drag handlers
+        if self.widget_command_on_click is None:
+            self.drag_start_x=event.x_root-self.root.winfo_x(); self.drag_start_y=event.y_root-self.root.winfo_y()
     def stop_move(self, event): self.drag_start_x = None; self.drag_start_y = None
     def do_move(self, event):
         if self.drag_start_x is not None and self.drag_start_y is not None: new_x=event.x_root-self.drag_start_x; new_y=event.y_root-self.drag_start_y; self.root.geometry(f"+{new_x}+{new_y}")
@@ -955,17 +1072,25 @@ class VerticalCommandBar:
     # --- Other Methods ---
     def _draw_bar_background(self): # Uses unscaled constants
         self.bar_canvas.delete("bar_bg"); width=self.bar_width; height=self.bar_height; radius=CORNER_RADIUS
+        if width <= 0 or height <= 0: return # Avoid drawing if dimensions are invalid
         if radius*2>min(width,height): radius=min(width,height)/2
         radius=max(0,radius); x1,y1,x2,y2=0,0,width,height
         points=[x1+radius,y1, x2-radius,y1, x2,y1, x2,y1+radius, x2,y2-radius, x2,y2, x2-radius,y2, x1+radius,y2, x1,y2, x1,y2-radius, x1,y1+radius, x1,y1, x1+radius,y1]
         if points: self.bar_canvas.create_polygon(points, fill=BAR_BG_COLOR, outline="", smooth=True, tags="bar_bg")
+
     def get_command_details(self, name): # Unchanged
         for cmd in self.commands:
             if cmd["name"]==name: return cmd
         return None
-    def toggle_command(self, name): # Unchanged (uses corrected syntax)
-        icon_widget=self.icon_widgets.get(name); command_details=self.get_command_details(name)
-        if not icon_widget or not command_details: print(f"Error: Could not find details for command '{name}'"); return
+
+    def toggle_command(self, name): # Now gets icon_widget from ui_manager
+        # Use the icon_widgets dictionary from the ui_manager instance
+        icon_widget = self.ui_manager.icon_widgets.get(name)
+        command_details = self.get_command_details(name)
+
+        if not icon_widget: print(f"Error: Could not find UI widget for command '{name}'"); return
+        if not command_details: print(f"Error: Could not find command details for '{name}'"); return
+
         command_str=command_details["command"]; is_currently_on=name in self.processes
         if not is_currently_on:
             try:
@@ -980,8 +1105,10 @@ class VerticalCommandBar:
             killed=self.kill_process_tree(pid)
             if killed: print(f"Stopped: '{name}' (PID: {pid}) successfully.")
             else: print(f"Warning: Could not confirm stopping process for '{name}' (PID: {pid}).")
+            # Ensure process is removed from tracking ONLY if kill was attempted/successful
             if name in self.processes: del self.processes[name]
-            icon_widget.set_state(False)
+            icon_widget.set_state(False) # Update icon state regardless
+
     def kill_process_tree(self, pid): # Unchanged
         try:
             parent=psutil.Process(pid); children=parent.children(recursive=True); procs_to_kill=children+[parent]
@@ -995,39 +1122,77 @@ class VerticalCommandBar:
                 try: proc.kill()
                 except (psutil.NoSuchProcess, Exception): pass
             gone, alive=psutil.wait_procs(alive, timeout=0.5); return len(alive)==0
-        except psutil.NoSuchProcess: return True
+        except psutil.NoSuchProcess: return True # Process already gone
         except Exception as e: print(f"Error killing tree {pid}: {e}"); return False
-    def hide_bar(self): # Uses unscaled constants
+
+    def hide_bar(self): # Uses unscaled constants (mostly unchanged, ensures geometry updates are correct)
         if self.is_hidden: return
         self.original_x=self.root.winfo_x(); self.original_y=self.root.winfo_y()
+        # Store current width/height *before* hiding
+        self.original_width = self.root.winfo_width()
+        self.original_height = self.root.winfo_height() # Use current height which might have changed
+
         self.main_frame.pack_forget(); self.is_hidden=True
         new_size=f"{SHOW_BUTTON_SIZE}x{SHOW_BUTTON_SIZE}" # Unscaled
-        new_x=self.original_x+(self.original_width//2)-(SHOW_BUTTON_SIZE//2); new_y=self.original_y+(self.original_height//2)-(SHOW_BUTTON_SIZE//2)
+        # Center the small button relative to the bar's last position
+        new_x=self.original_x+(self.original_width//2)-(SHOW_BUTTON_SIZE//2);
+        new_y=self.original_y+(self.original_height//2)-(SHOW_BUTTON_SIZE//2)
         screen_width=self.root.winfo_screenwidth(); screen_height=self.root.winfo_screenheight()
         new_x=max(0,min(new_x, screen_width-SHOW_BUTTON_SIZE)); new_y=max(0,min(new_y, screen_height-SHOW_BUTTON_SIZE))
+
         self.root.geometry(f"{new_size}+{new_x}+{new_y}")
         self.root.config(bg=BG_COLOR_TRANSPARENT)
         try: self.show_button_frame.config(bg=BG_COLOR_TRANSPARENT); self.root.attributes("-transparentcolor", BG_COLOR_TRANSPARENT); self.root.attributes('-alpha', 0.99)
         except tk.TclError: self.root.attributes('-alpha', 0.85)
-        self.show_button_frame.place(x=0, y=0, relwidth=1, relheight=1)
+
+        self.show_button_frame.place(x=0, y=0, relwidth=1, relheight=1) # Place instead of pack for specific size
+
+        # Ensure correct bindings for the show button frame and its content
         cmd_func=self.show_bar
-        self.show_button_frame.bind("<Button-1>", lambda event, cmd=cmd_func: self.start_widget_move_or_click(event, cmd)); self.show_button_frame.bind("<ButtonRelease-1>", self.stop_widget_move_or_click); self.show_button_frame.bind("<B1-Motion>", self.do_widget_move)
-        self.show_button.bind("<Button-1>", lambda event, cmd=cmd_func: self.start_widget_move_or_click(event, cmd)); self.show_button.bind("<ButtonRelease-1>", self.stop_widget_move_or_click); self.show_button.bind("<B1-Motion>", self.do_widget_move)
-    def show_bar(self): # Uses unscaled constants
+        # Bind to the frame itself for drag events
+        self.show_button_frame.bind("<Button-1>", lambda event, cmd=cmd_func: self.start_widget_move_or_click(event, cmd));
+        self.show_button_frame.bind("<ButtonRelease-1>", self.stop_widget_move_or_click);
+        self.show_button_frame.bind("<B1-Motion>", self.do_widget_move)
+        # Bind to the button inside the frame as well, especially for the click action
+        self.show_button.bind("<Button-1>", lambda event, cmd=cmd_func: self.start_widget_move_or_click(event, cmd));
+        self.show_button.bind("<ButtonRelease-1>", self.stop_widget_move_or_click);
+        self.show_button.bind("<B1-Motion>", self.do_widget_move) # Allow drag via button too
+
+
+    def show_bar(self): # Uses unscaled constants (mostly unchanged, ensures geometry updates are correct)
         if not self.is_hidden: return
         self.show_button_frame.place_forget(); self.is_hidden=False
         self.root.config(bg=BG_COLOR_TRANSPARENT)
         try: self.root.attributes("-transparentcolor", BG_COLOR_TRANSPARENT); self.root.attributes('-alpha', 0.99)
         except tk.TclError: self.root.attributes('-alpha', BAR_BG_ALPHA)
+
         current_x=self.root.winfo_x(); current_y=self.root.winfo_y()
-        restored_x=current_x-(self.original_width//2)+(SHOW_BUTTON_SIZE//2); restored_y=current_y-(self.original_height//2)+(SHOW_BUTTON_SIZE//2)
+        # Restore centered based on the *updated* original height
+        restored_x=current_x-(self.original_width//2)+(SHOW_BUTTON_SIZE//2);
+        restored_y=current_y-(self.original_height//2)+(SHOW_BUTTON_SIZE//2) # Use potentially updated original_height
         screen_width=self.root.winfo_screenwidth(); screen_height=self.root.winfo_screenheight()
-        restored_x=max(0,min(restored_x, screen_width-self.original_width)); restored_y=max(0,min(restored_y, screen_height-self.original_height))
+        restored_x=max(0,min(restored_x, screen_width-self.original_width));
+        restored_y=max(0,min(restored_y, screen_height-self.original_height)) # Use potentially updated original_height
+
+        # Use the potentially updated original_height when restoring geometry
         self.root.geometry(f"{self.original_width}x{self.original_height}+{restored_x}+{restored_y}")
         self.main_frame.pack(fill=tk.BOTH, expand=True)
+        # Redraw background if needed after showing and resizing
+        self.bar_canvas.config(height=self.original_height) # Ensure canvas matches restored height
+        if not self.use_alpha_transparency:
+            self._draw_bar_background()
+        # Ensure content frame is correctly placed within the restored bar
+        self.content_frame.place(x=BAR_PADDING_HORIZONTAL,y=BAR_PADDING_VERTICAL,
+                                 width=self.bar_width-(2*BAR_PADDING_HORIZONTAL),
+                                 height=self.original_height-(2*BAR_PADDING_VERTICAL))
+
+
     def on_close(self): # Unchanged
         print("Closing application, stopping all processes...")
-        for name, pid in list(self.processes.items()): print(f"Stopping '{name}' (PID: {pid}) on close."); self.kill_process_tree(pid)
+        # Use self.processes which is correctly managed now
+        for name, pid in list(self.processes.items()):
+             print(f"Stopping '{name}' (PID: {pid}) on close.")
+             self.kill_process_tree(pid)
         self.root.destroy()
 
 if __name__ == "__main__":
