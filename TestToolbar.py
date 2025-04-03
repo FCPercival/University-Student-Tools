@@ -537,12 +537,9 @@ class CommandSettingsWindow:
             elif tool == "image-clipboard":
                 command += f"clipboard.image_clipboard"
 
-            # Add arguments with quotes if they contain spaces
+            # Add arguments directly, separated by space. Expect paths with spaces to be quoted in the input.
             for arg in args:
-                if " " in arg and not (arg.startswith('"') and arg.endswith('"')):
-                    command += f' "{arg}"'
-                else:
-                    command += f" {arg}"
+                 command += f" {arg}"
         else:
              # Handle potential other tools or cases where args might be empty for built-ins
              print(f"Warning: Unhandled tool type '{tool}' or missing arguments. Command will be empty.")
@@ -1153,13 +1150,25 @@ class VerticalCommandBar:
                     print(f"Executing with shell=True: {cmd_list}") # Debug print
                 # -------------------------------------------
 
-                process = subprocess.Popen(cmd_list, shell=use_shell, **kwargs)
+                process = subprocess.Popen(cmd_list, shell=use_shell, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs)
                 self.processes[name] = process.pid
                 icon_widget.set_state(True)
                 print(f"Started: '{name}' (PID: {process.pid})")
 
+                #--- Capture output after starting (optional, can be blocking) ---
+                stdout, stderr = process.communicate()
+                if stdout:
+                    print(f"[{name} stdout]:\n{stdout.strip()}")
+                if stderr:
+                    print(f"[{name} stderr]:\n{stderr.strip()}", file=sys.stderr) # Print errors to stderr
+                process.poll() # Update return code
+                if process.returncode != 0:
+                    print(f"Warning: '{name}' (PID: {process.pid}) exited with code {process.returncode}", file=sys.stderr)
+                    icon_widget.set_state(False) # Turn off icon if process failed quickly
+                    if name in self.processes: del self.processes[name]
+
             except Exception as e:
-                print(f"Error starting '{name}': {e}")
+                print(f"Error starting '{name}': {e}", file=sys.stderr)
                 icon_widget.set_state(False)
         else:
             # --- Stopping process logic (remains the same) ---
