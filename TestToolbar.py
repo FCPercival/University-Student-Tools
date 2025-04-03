@@ -769,7 +769,8 @@ class VerticalCommandBar:
 
         separator=tk.Canvas(self.content_frame,height=SEPARATOR_HEIGHT,bg=SEPARATOR_COLOR,highlightthickness=0)
         separator.pack(side=tk.TOP,fill=tk.X,padx=BAR_PADDING_HORIZONTAL,pady=ICON_PADDING_VERTICAL)
-        
+        self.separator = separator
+
         # Settings Button
         self.settings_button=RoundedButton(self.content_frame,self.bar_width-(2*(BAR_PADDING_HORIZONTAL+5)),BUTTON_HEIGHT,BUTTON_HEIGHT/2,
                                          text="Settings",command=self.open_settings,font=FONT_BUTTON,bg=content_bg)
@@ -854,12 +855,22 @@ class VerticalCommandBar:
         
         # Clear existing icon widgets
         for widget in self.icon_widgets.values():
+            widget.pack_forget() # Remove from layout
             widget.destroy()
         self.icon_widgets = {}
         self._icon_photo_refs = []
         
+        #Remove separator and buttons from layout
+        self.separator.pack_forget()
+        self.settings_button.pack_forget()
+        self.hide_button.pack_forget()
+
         # Reload commands
-        self.commands = load_commands(self.command_file_path)
+        try:
+            self.commands = load_commands(self.command_file_path)
+        except Exception as e:
+            print(f"Error in loading commands from {self.command_file_path}: {e}")
+            self.commands = [] # Proceed with an empty list in case of error
         
         # Recreate icons
         for cmd_data in self.commands:
@@ -874,7 +885,12 @@ class VerticalCommandBar:
             icon.bind("<Button-1>", lambda event, cmd=cmd_func: self.start_widget_move_or_click(event, cmd))
             icon.bind("<ButtonRelease-1>", self.stop_widget_move_or_click)
             icon.bind("<B1-Motion>", self.do_widget_move)
-        
+
+        # Re-pack the separator and buttons at the bottom
+        self.separator.pack(side=tk.TOP, fill=tk.X, padx=BAR_PADDING_HORIZONTAL, pady=ICON_PADDING_VERTICAL)
+        self.settings_button.pack(side=tk.TOP, pady=(0, ICON_PADDING_VERTICAL//2))
+        self.hide_button.pack(side=tk.TOP, pady=(0, ICON_PADDING_VERTICAL//2))
+
         # Update bar size based on new number of commands
         self.update_bar_size()
         
