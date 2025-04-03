@@ -19,6 +19,10 @@ import io
 import matplotlib.font_manager
 import json
 import os
+import shlex
+
+# Helper to get the base path of the script
+script_base_path = os.path.dirname(os.path.abspath(__file__))
 
 # --- Scaling Factor for Internal Rendering ---
 RENDER_SCALE = 3 # Render at 3x size then downscale for sharpness
@@ -491,7 +495,6 @@ class CommandSettingsWindow:
                 # Get everything after the tool name
                 args_part = parts[1].strip()
                 # Split by spaces, preserving quoted parts
-                import shlex
                 try:
                     args = list(shlex.split(args_part))
                 except:
@@ -522,27 +525,32 @@ class CommandSettingsWindow:
         args = [arg for arg in args_text.split("\n") if arg.strip()]
         
         # Build command string based on tool
+        command = "" # Initialize command string
         if tool == "custom" and args:
             # For custom, use the first arg as the full command
             command = args[0]
-        else:
-            # For built-in tools, build the proper command format
-            command = f"cmd.exe /k python -m university_student_tools."
+        elif tool in ["copy-files", "image-clipboard"]:
+            # For built-in tools, build the python -m command format
+            command = f"python -m university_student_tools." # Start with python -m
             if tool == "copy-files":
                 command += f"file_manager.copy_files"
             elif tool == "image-clipboard":
                 command += f"clipboard.image_clipboard"
-            
+
             # Add arguments with quotes if they contain spaces
             for arg in args:
                 if " " in arg and not (arg.startswith('"') and arg.endswith('"')):
                     command += f' "{arg}"'
                 else:
                     command += f" {arg}"
-        
+        else:
+             # Handle potential other tools or cases where args might be empty for built-ins
+             print(f"Warning: Unhandled tool type '{tool}' or missing arguments. Command will be empty.")
+
+
         return {
             "name": name,
-            "command": command,
+            "command": command, # Use the newly constructed command
             "color": color
         }
     
@@ -1099,31 +1107,72 @@ class VerticalCommandBar:
             if cmd["name"]==name: return cmd
         return None
 
-    def toggle_command(self, name): # Now gets icon_widget from ui_manager
-        # Use the icon_widgets dictionary from the ui_manager instance
+    def toggle_command(self, name):
         icon_widget = self.ui_manager.icon_widgets.get(name)
         command_details = self.get_command_details(name)
 
         if not icon_widget: print(f"Error: Could not find UI widget for command '{name}'"); return
         if not command_details: print(f"Error: Could not find command details for '{name}'"); return
 
-        command_str=command_details["command"]; is_currently_on=name in self.processes
+        command_str = command_details["command"]
+        is_currently_on = name in self.processes
+
         if not is_currently_on:
             try:
-                kwargs={}; platform_sys=platform.system()
-                if platform_sys=="Windows": kwargs['creationflags']=subprocess.CREATE_NEW_PROCESS_GROUP
-                else: kwargs['start_new_session']=True
-                process=subprocess.Popen(command_str,shell=True,**kwargs)
-                self.processes[name]=process.pid; icon_widget.set_state(True); print(f"Started: '{name}' (PID: {process.pid})")
-            except Exception as e: print(f"Error starting '{name}': {e}"); icon_widget.set_state(False)
+                kwargs = {}
+                platform_sys = platform.system()
+                if platform_sys == "Windows":
+                    kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+                else:
+                    kwargs['start_new_session'] = True
+
+                kwargs['cwd'] = script_base_path # Keep cwd
+
+                # --- Command Parsing and Execution Logic ---
+                use_shell = True
+                cmd_list = None
+
+                if command_str.startswith("python -m "): # Check if it's a python module command
+                    try:
+                        # Split the command string safely using shlex
+                        parts = shlex.split(command_str)
+                        if len(parts) >= 3 and parts[0] == 'python' and parts[1] == '-m':
+                           # Build the command list using sys.executable
+                           cmd_list = [sys.executable] + parts[1:] # ['python_path', '-m', 'module.name', 'arg1', ...]
+                           use_shell = False # Execute directly without shell
+                           print(f"Executing with sys.executable: {cmd_list}") # Debug print
+                        else:
+                            print(f"Warning: Could not parse 'python -m' command correctly: {command_str}")
+                    except Exception as parse_error:
+                        print(f"Warning: Error parsing command string '{command_str}': {parse_error}")
+
+                # Fallback to original command string if parsing failed or not a python -m command
+                if cmd_list is None:
+                    cmd_list = command_str # Use the original string
+                    use_shell = True # Use shell for custom/unparsed commands
+                    print(f"Executing with shell=True: {cmd_list}") # Debug print
+                # -------------------------------------------
+
+                process = subprocess.Popen(cmd_list, shell=use_shell, **kwargs)
+                self.processes[name] = process.pid
+                icon_widget.set_state(True)
+                print(f"Started: '{name}' (PID: {process.pid})")
+
+            except Exception as e:
+                print(f"Error starting '{name}': {e}")
+                icon_widget.set_state(False)
         else:
-            pid=self.processes[name]; print(f"Stopping: '{name}' (PID: {pid})...")
-            killed=self.kill_process_tree(pid)
-            if killed: print(f"Stopped: '{name}' (PID: {pid}) successfully.")
-            else: print(f"Warning: Could not confirm stopping process for '{name}' (PID: {pid}).")
-            # Ensure process is removed from tracking ONLY if kill was attempted/successful
-            if name in self.processes: del self.processes[name]
-            icon_widget.set_state(False) # Update icon state regardless
+            # --- Stopping process logic (remains the same) ---
+            pid = self.processes[name]
+            print(f"Stopping: '{name}' (PID: {pid})...")
+            killed = self.kill_process_tree(pid)
+            if killed:
+                print(f"Stopped: '{name}' (PID: {pid}) successfully.")
+            else:
+                print(f"Warning: Could not confirm stopping process for '{name}' (PID: {pid}).")
+            if name in self.processes:
+                del self.processes[name]
+            icon_widget.set_state(False)
 
     def kill_process_tree(self, pid): # Unchanged
         try:

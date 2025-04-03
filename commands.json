@@ -1,32 +1,32 @@
 [
     {
         "name": "PDF OUT",
-        "command": "cmd.exe /k python -m university_student_tools.file_manager.copy_files Path\\to\\images\\A_PDF",
+        "command": "python -m university_student_tools.file_manager.copy_files \"Source Path\"\\n\"Destination Path\"",
         "color": "#5856D6"
     },
     {
         "name": "PDFParsing",
-        "command": "cmd.exe /k python \\path\\to\\PDF_to_LaTeX.py",
+        "command": "python \\path\\to\\PDF_to_LaTeX.py",
         "color": "#AF52DE"
     },
     {
         "name": "FDL_Pic",
-        "command": "cmd.exe /k python -m university_student_tools.clipboard.image_clipboard \"Path\\to\\images\\Fundamentals of Distributed Ledgers\"",
+        "command": "python -m university_student_tools.clipboard.image_clipboard \"Image Directory Path\"",
         "color": "#0066FF"
     },
     {
         "name": "CDM_Pic",
-        "command": "cmd.exe /k python -m university_student_tools.clipboard.image_clipboard \"Path\\to\\images\\Cloud Data Management\"",
+        "command": "python -m university_student_tools.clipboard.image_clipboard \"Image Directory Path\"",
         "color": "#FF9500"
     },
     {
         "name": "DSP_Pic",
-        "command": "cmd.exe /k python -m university_student_tools.clipboard.image_clipboard \"Path\\to\\images\\Data Security and Privacy\"",
+        "command": "python -m university_student_tools.clipboard.image_clipboard \"Image Directory Path\"",
         "color": "#FF2D55"
     },
     {
         "name": "LAI_Pic",
-        "command": "cmd.exe /k python -m university_student_tools.clipboard.image_clipboard \"Path\\to\\images\\Logic for AI\"",
+        "command": "python -m university_student_tools.clipboard.image_clipboard \"Image Directory Path\"",
         "color": "#00ff80"
     }
 ]
