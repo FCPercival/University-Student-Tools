@@ -219,10 +219,11 @@ class CommandIcon(tk.Canvas):
     def on_leave(self, event): self.config(bg=self.parent_bg)
 
 class CommandSettingsWindow:
-    def __init__(self, parent, command_bar, command_file_path="commands.json"):
+    def __init__(self, parent, command_bar, on_close_callback, command_file_path="commands.json"):
         self.parent = parent
         self.command_bar = command_bar
         self.command_file_path = command_file_path
+        self.on_close_callback = on_close_callback
         self.commands = self.load_commands()
         self.current_command_index = None
         self.tools = self.get_available_tools()
@@ -231,6 +232,7 @@ class CommandSettingsWindow:
         self.window.title("Command Settings")
         self.window.configure(bg=BAR_BG_COLOR)
         self.window.attributes('-topmost', True)
+        self.window.protocol("WM_DELETE_WINDOW", self.on_window_close)
         
         # Scale window size relative to screen
         width = 500
@@ -685,8 +687,8 @@ class CommandSettingsWindow:
         if self.save_commands_to_file():
             # Reload the command bar
             self.command_bar.reload_commands()
-            # Close the window
-            self.window.destroy()
+            # Close the window using the new method
+            self.on_window_close()
             print("All changes saved and applied")
         else:
             print("Failed to save changes")
@@ -718,6 +720,12 @@ class CommandSettingsWindow:
         
         return "break"
 
+    def on_window_close(self):
+        """Handles the window close event."""
+        if self.on_close_callback:
+            self.on_close_callback()
+        self.window.destroy()
+
 class VerticalCommandBar:
     # Uses unscaled constants for layout and widget sizes
     def __init__(self, root):
@@ -734,6 +742,7 @@ class VerticalCommandBar:
         # Load commands from the JSON configuration file.
         self.command_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "commands.json")
         self.commands = load_commands(self.command_file_path)
+        self.settings_window = None # Add variable to track settings window
 
         # Calculations use unscaled constants
         num_icons=len(self.commands); icons_height=(num_icons*ICON_CANVAS_HEIGHT)+((num_icons-1)*ICON_PADDING_VERTICAL)
@@ -817,9 +826,27 @@ class VerticalCommandBar:
         self.bar_canvas.bind("<Button-1>", self.start_move); self.bar_canvas.bind("<ButtonRelease-1>", self.stop_move); self.bar_canvas.bind("<B1-Motion>", self.do_move); self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def open_settings(self):
+        # Check if window exists and is visible
+        if self.settings_window and self.settings_window.window.winfo_exists():
+            self.settings_window.window.lift() # Bring to front
+            self.settings_window.window.focus_force() # Force focus
+            print("Settings window already open, bringing to front.")
+            return
+
         # Open the settings window
-        CommandSettingsWindow(self.root, self, self.command_file_path)
-    
+        print("Opening new settings window.")
+        self.settings_window = CommandSettingsWindow(
+            self.root, 
+            self, 
+            on_close_callback=self.on_settings_close, # Pass callback
+            command_file_path=self.command_file_path
+        )
+
+    def on_settings_close(self):
+        """Callback function when the settings window is closed."""
+        print("Settings window closed.")
+        self.settings_window = None # Reset the tracker variable
+
     def reload_commands(self):
         # Reload commands from the JSON file and refresh the UI
         for name in list(self.processes.keys()):
