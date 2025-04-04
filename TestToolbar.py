@@ -1244,7 +1244,7 @@ class VerticalCommandBar:
 
                 # MODIFICATION: START PROCESS CAPTURING STDERR
                 process = subprocess.Popen(cmd_list, shell=use_shell,
-                                        stdout=subprocess.DEVNULL, # Ignore standard output
+                                        stdout=subprocess.PIPE,    # Capture standard output instead of DEVNULL
                                         stderr=subprocess.PIPE,    # Capture error output
                                         text=True,       # Decode stderr as text (uses default encoding)
                                         encoding='utf-8', # Specify encoding for safety
@@ -1257,9 +1257,9 @@ class VerticalCommandBar:
                 icon_widget.set_state(True)
                 print(f"Started: '{name}' (PID: {process.pid})")
 
-                # --- START STDERR MONITORING THREAD ---
+                # --- START STDOUT AND STDERR MONITORING THREAD ---
                 # Pass the 'process' object itself to the thread
-                monitor_thread = threading.Thread(target=self._monitor_stderr, args=(name, process), daemon=True)
+                monitor_thread = threading.Thread(target=self._monitor_process_output, args=(name, process), daemon=True)
                 # Daemon=True ensures the thread exits automatically if the main app closes
                 monitor_thread.start()
                 # ---------------------------------------------
@@ -1391,6 +1391,63 @@ class VerticalCommandBar:
              print(f"Stopping '{name}' (PID: {pid}) on close.")
              self.kill_process_tree(pid)
         self.root.destroy()
+
+    def _monitor_process_output(self, name, process):
+        """
+        Function executed in a separate thread to read stdout and stderr
+        and schedule UI updates when the process finishes.
+        """
+        # Note: 'process' here is the returned Popen object
+        pid = process.pid # Get the PID for logging
+        print(f"[{name}] Monitoring output for PID: {pid}")
+        
+        # Create readers for both stdout and stderr
+        stdout_reader = threading.Thread(target=self._read_stream, 
+                                       args=(name, process, process.stdout, "stdout", pid), 
+                                       daemon=True)
+        stderr_reader = threading.Thread(target=self._read_stream, 
+                                       args=(name, process, process.stderr, "stderr", pid), 
+                                       daemon=True)
+        
+        # Start both threads
+        stdout_reader.start()
+        stderr_reader.start()
+        
+        # Wait for both to complete
+        stdout_reader.join()
+        stderr_reader.join()
+        
+        # Wait for the process to terminate completely to get the returncode
+        process.wait()
+        
+        return_code = process.returncode
+        print(f"[{name}] Process PID {pid} finished with code: {return_code}")
+        
+        # Schedule the status check in the main Tkinter thread
+        self.root.after(0, lambda n=name, p=pid, rc=return_code: self._check_process_end_status(n, p, rc))
+    
+    def _read_stream(self, name, process, stream, stream_name, pid):
+        """Read from a stream (stdout or stderr) and print to console."""
+        try:
+            # Read stream line by line as long as it's available
+            for line in iter(stream.readline, ''):
+                if line:  # Only print if the line is not empty
+                    output = f"[{name} {stream_name} PID:{pid}]: {line.strip()}"
+                    if stream_name == "stderr":
+                        print(output, file=sys.stderr)
+                    else:
+                        print(output)
+                        
+            # Once stream is closed, ensure it's fully closed
+            stream.close()
+            
+        except ValueError:
+            # Can happen if trying to read from a closed pipe
+            print(f"[{name}] ValueError reading {stream_name} for PID {pid}. Stream likely closed.", file=sys.stderr)
+        except Exception as e:
+            print(f"[{name}] Error reading {stream_name} for PID {pid}: {e}", file=sys.stderr)
+        finally:
+            print(f"[{name}] {stream_name} reader for PID {pid} ending.")
 
 if __name__ == "__main__":
     if not PIL_AVAILABLE:
