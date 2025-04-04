@@ -20,6 +20,8 @@ import matplotlib.font_manager
 import json
 import os
 import shlex
+import threading
+
 
 # Helper to get the base path of the script
 script_base_path = os.path.dirname(os.path.abspath(__file__))
@@ -1104,6 +1106,92 @@ class VerticalCommandBar:
             if cmd["name"]==name: return cmd
         return None
 
+    def _monitor_stderr(self, name, process):
+        """
+        Function executed in a separate thread to read stderr
+        and schedule UI updates when the process finishes.
+        """
+        # Note: 'process' here is the returned Popen object
+        pid = process.pid # Get the PID for logging
+        print(f"[{name}] Monitoring stderr for PID: {pid}")
+        try:
+            # Read stderr line by line as long as it's available
+            # Popen was called with text=True, so we receive strings
+            for line in iter(process.stderr.readline, ''):
+                if line: # Only print if the line is not empty
+                    # Print directly to the main console's sys.stderr
+                    print(f"[{name} stderr PID:{pid}]: {line.strip()}", file=sys.stderr)
+
+            # Once stderr is closed (process terminated or stream closed)
+            process.stderr.close() # Ensure the stream is closed
+            process.wait() # Wait for the process to terminate completely to get the returncode
+
+            return_code = process.returncode
+            print(f"[{name}] Process PID {pid} finished with code: {return_code}")
+
+            # Schedule the status check in the main Tkinter thread
+            self.root.after(0, lambda n=name, p=pid, rc=return_code: self._check_process_end_status(n, p, rc))
+
+        except ValueError:
+            # Can happen if trying to read from a closed pipe after wait() has already been called
+            # or if the process terminates very abruptly.
+            print(f"[{name}] ValueError reading stderr for PID {pid}. Process likely terminated abruptly.", file=sys.stderr)
+            # Still attempt to get the final status and update the UI
+            final_rc = process.poll() # Get status without waiting again
+            self.root.after(0, lambda n=name, p=pid, rc=final_rc: self._check_process_end_status(n, p, rc))
+        except Exception as e:
+            print(f"[{name}] Error reading stderr for PID {pid}: {e}", file=sys.stderr)
+            # Still try to update the UI if the process is still tracked
+            final_rc = process.poll()
+            self.root.after(0, lambda n=name, p=pid, rc=final_rc: self._check_process_end_status(n, p, rc))
+        finally:
+            # Ensure wait() is called if there was an exception earlier
+            # and the process might still be alive (though unlikely after the error)
+            if process.poll() is None: # If it hasn't terminated yet
+                try:
+                    process.wait(timeout=0.1) # Short final wait
+                except (subprocess.TimeoutExpired, ValueError): # Added ValueError here
+                    # Could have already terminated between poll() and wait()
+                    pass
+                except Exception as final_e:
+                    print(f"[{name}] Error during final wait for PID {pid}: {final_e}", file=sys.stderr)
+
+            print(f"[{name}] Monitor thread for PID {pid} ending.")
+
+
+    def _check_process_end_status(self, name, pid, return_code):
+        """
+        Called from the main thread (via root.after) to handle
+        the end of a monitored process. Updates UI if necessary.
+        """
+        # Check if the terminated process is STILL considered active by us
+        # (i.e., the user did NOT click "Stop" in the meantime)
+        if name in self.processes and self.processes[name] == pid:
+            # Yes, it finished on its own (or crashed) and was still active for us
+            print(f"[{name}] Process PID {pid} ended on its own with code {return_code}. Updating UI.")
+            icon_widget = self.ui_manager.icon_widgets.get(name)
+            if icon_widget:
+                icon_widget.set_state(False) # Update the icon to OFF
+
+            del self.processes[name] # Remove from the active list
+
+            if return_code is not None and return_code != 0:
+                print(f"[{name}] Process PID {pid} exited unexpectedly or with error code {return_code}.", file=sys.stderr)
+            elif return_code is None:
+                print(f"[{name}] Process PID {pid} status unknown after termination (return code is None).", file=sys.stderr)
+
+        elif pid not in self.processes.values():
+            # The process terminated, but it was NOT (or no longer) in our self.processes list
+            # or the PID no longer matches that name.
+            # This usually means the user pressed 'Stop'.
+            # The stop logic in toggle_command already handled the icon and self.processes.
+            print(f"[{name}] Process PID {pid} ended, but was already removed or PID mismatch (likely stopped manually). No UI change needed from monitor.")
+        else:
+            # Rare case: the name is in self.processes but the PID no longer matches the one that terminated.
+            # Could happen if a command is stopped and restarted very quickly.
+            print(f"[{name}] Process PID {pid} ended, but the active PID for this name is now {self.processes.get(name)}. Ignoring stale end signal.")
+
+
     def toggle_command(self, name):
         icon_widget = self.ui_manager.icon_widgets.get(name)
         command_details = self.get_command_details(name)
@@ -1115,15 +1203,20 @@ class VerticalCommandBar:
         is_currently_on = name in self.processes
 
         if not is_currently_on:
+            # --- STARTING PROCESS ---
             try:
                 kwargs = {}
                 platform_sys = platform.system()
                 if platform_sys == "Windows":
-                    kwargs['creationflags'] = subprocess.CREATE_NEW_PROCESS_GROUP
+                    # Import only on Windows to avoid errors on other OS
+                    # Doing the import here for safety if it's not global
+                    import subprocess as sp_win
+                    kwargs['creationflags'] = sp_win.CREATE_NEW_PROCESS_GROUP
                 else:
-                    kwargs['start_new_session'] = True
+                    kwargs['start_new_session'] = True # For Linux/macOS
 
-                kwargs['cwd'] = script_base_path # Keep cwd
+                global script_base_path # Ensure it's accessible
+                kwargs['cwd'] = script_base_path # Keep current working directory
 
                 # --- Command Parsing and Execution Logic ---
                 use_shell = True
@@ -1131,57 +1224,87 @@ class VerticalCommandBar:
 
                 if command_str.startswith("python -m "): # Check if it's a python module command
                     try:
-                        # Split the command string safely using shlex
+                        # Ensure sys is imported
+                        # import sys # Hopefully already imported globally
                         parts = shlex.split(command_str)
                         if len(parts) >= 3 and parts[0] == 'python' and parts[1] == '-m':
-                           # Build the command list using sys.executable
-                           cmd_list = [sys.executable] + parts[1:] # ['python_path', '-m', 'module.name', 'arg1', ...]
-                           use_shell = False # Execute directly without shell
-                           print(f"Executing with sys.executable: {cmd_list}") # Debug print
+                            cmd_list = [sys.executable] + parts[1:] # ['python_path', '-m', 'module.name', 'arg1', ...]
+                            use_shell = False # Execute directly without shell
+                            print(f"Executing with sys.executable: {cmd_list}") # Debug print
                         else:
                             print(f"Warning: Could not parse 'python -m' command correctly: {command_str}")
                     except Exception as parse_error:
                         print(f"Warning: Error parsing command string '{command_str}': {parse_error}")
 
-                # Fallback to original command string if parsing failed or not a python -m command
                 if cmd_list is None:
                     cmd_list = command_str # Use the original string
                     use_shell = True # Use shell for custom/unparsed commands
                     print(f"Executing with shell=True: {cmd_list}") # Debug print
                 # -------------------------------------------
 
-                process = subprocess.Popen(cmd_list, shell=use_shell, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **kwargs)
+                # MODIFICATION: START PROCESS CAPTURING STDERR
+                process = subprocess.Popen(cmd_list, shell=use_shell,
+                                        stdout=subprocess.DEVNULL, # Ignore standard output
+                                        stderr=subprocess.PIPE,    # Capture error output
+                                        text=True,       # Decode stderr as text (uses default encoding)
+                                        encoding='utf-8', # Specify encoding for safety
+                                        errors='replace', # Handles decoding errors
+                                        bufsize=1,       # Line-buffered for stderr (more immediate output)
+                                        **kwargs)
+
+                # Store the PID immediately after launch
                 self.processes[name] = process.pid
                 icon_widget.set_state(True)
                 print(f"Started: '{name}' (PID: {process.pid})")
 
-                #--- Capture output after starting (optional, can be blocking) ---
-                stdout, stderr = process.communicate()
-                if stdout:
-                    print(f"[{name} stdout]:\n{stdout.strip()}")
-                if stderr:
-                    print(f"[{name} stderr]:\n{stderr.strip()}", file=sys.stderr) # Print errors to stderr
-                process.poll() # Update return code
-                if process.returncode != 0:
-                    print(f"Warning: '{name}' (PID: {process.pid}) exited with code {process.returncode}", file=sys.stderr)
-                    icon_widget.set_state(False) # Turn off icon if process failed quickly
-                    if name in self.processes: del self.processes[name]
+                # --- START STDERR MONITORING THREAD ---
+                # Pass the 'process' object itself to the thread
+                monitor_thread = threading.Thread(target=self._monitor_stderr, args=(name, process), daemon=True)
+                # Daemon=True ensures the thread exits automatically if the main app closes
+                monitor_thread.start()
+                # ---------------------------------------------
 
             except Exception as e:
                 print(f"Error starting '{name}': {e}", file=sys.stderr)
-                icon_widget.set_state(False)
+                # Ensure the icon is turned off if startup fails
+                if icon_widget:
+                    icon_widget.set_state(False)
+                # Remove from the list if it was added before the error occurred
+                if name in self.processes:
+                    del self.processes[name]
         else:
-            # --- Stopping process logic (remains the same) ---
-            pid = self.processes[name]
-            print(f"Stopping: '{name}' (PID: {pid})...")
-            killed = self.kill_process_tree(pid)
-            if killed:
-                print(f"Stopped: '{name}' (PID: {pid}) successfully.")
-            else:
-                print(f"Warning: Could not confirm stopping process for '{name}' (PID: {pid}).")
-            if name in self.processes:
+            # --- STOPPING PROCESS ---
+            pid_to_stop = self.processes.get(name) # Use get for safety
+            if pid_to_stop:
+                print(f"Stopping: '{name}' (PID: {pid_to_stop})...")
+
+                # Remove the process from the list *before* attempting to kill
+                # This signals to the monitoring thread (_check_process_end_status)
+                # that the stop was intentional.
                 del self.processes[name]
-            icon_widget.set_state(False)
+
+                # Attempt to terminate the process and its children
+                killed = self.kill_process_tree(pid_to_stop)
+
+                # Update the icon *after* removing from the list and attempting kill
+                if icon_widget:
+                    icon_widget.set_state(False)
+
+                if killed:
+                    print(f"Stopped: '{name}' (PID: {pid_to_stop}) successfully.")
+                else:
+                    print(f"Warning: Could not confirm stopping process for '{name}' (PID: {pid_to_stop}). It might already be gone or termination failed.")
+            else:
+                # If the name was in self.processes but PID wasn't found (unlikely)
+                print(f"Warning: '{name}' was marked as running, but PID not found. Cleaning up state.")
+                if icon_widget:
+                    icon_widget.set_state(False)
+                # Double-check and safe removal
+                if name in self.processes:
+                    try:
+                        del self.processes[name]
+                    except KeyError:
+                        pass # Already removed, okay
 
     def kill_process_tree(self, pid): # Unchanged
         try:
